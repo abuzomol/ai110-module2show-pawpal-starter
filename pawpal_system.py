@@ -16,7 +16,7 @@ Next step: connect Scheduler.build_plan() to app.py.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 
@@ -86,6 +86,7 @@ class Task:
     category: TaskCategory = TaskCategory.OTHER
     recurrence: Recurrence = Recurrence.ONCE
     is_completed: bool = False
+    pet_name: str = ""  # set when pooling several pets into one plan
 
     def priority_weight(self) -> int:
         """Numeric weight for sorting (higher = more important)."""
@@ -213,11 +214,37 @@ class Scheduler:
 
         return Plan(pet_name=pet_name, entries=entries, skipped=skipped)
 
+    def build_multi_pet_plan(
+        self,
+        pets: list["Pet"],
+        constraints: DayConstraints,
+        household_name: str = "Household",
+    ) -> "Plan":
+        """Schedule several pets' tasks on ONE shared timeline.
+
+        All pets' tasks are pooled into a single build_plan call, so they are
+        placed sequentially on one owner timeline. Because a single plan never
+        overlaps its own entries, this guarantees no two tasks (same pet or
+        different pets) are scheduled at the same time. Ordering is by priority
+        across the whole household, and `available_minutes` is the owner's total
+        budget for everyone combined.
+
+        Each pooled task is tagged with its pet's name (via `Task.pet_name`) so
+        the resulting entries and skipped list say which pet each task is for.
+        """
+        pooled = [
+            replace(task, pet_name=pet.name)
+            for pet in pets
+            for task in pet.tasks
+        ]
+        return self.build_plan(household_name, pooled, constraints)
+
     def _explain(self, entry: "PlanEntry") -> str:
         """Human-readable reason this task landed where it did."""
         task = entry.task
+        who = f"{task.pet_name}: " if task.pet_name else ""
         return (
-            f"{task.priority.value} priority, {task.duration_minutes} min "
+            f"{who}{task.priority.value} priority, {task.duration_minutes} min "
             f"— scheduled at {entry.start_time}"
         )
 
@@ -250,3 +277,119 @@ class Plan:
         if self.skipped:
             line += f", {len(self.skipped)} skipped for time"
         return line
+
+
+# ---------------------------------------------------------------------------
+# Multi-day planning (carry-over + recurrence, with a max_days cap)
+# ---------------------------------------------------------------------------
+def _is_due(task: Task, day_index: int) -> bool:
+    """Whether a recurring task should be (re-)scheduled on `day_index` (0-based).
+
+    DAILY  -> every day.
+    WEEKLY -> day 0, 7, 14, ... of the planning horizon (day-index based).
+    ONCE tasks are handled via the carry-over backlog, not this function.
+    """
+    if task.recurrence is Recurrence.DAILY:
+        return True
+    if task.recurrence is Recurrence.WEEKLY:
+        return day_index % 7 == 0
+    return False
+
+
+def _no_recurrence_due_in(recurring: list[Task], from_day: int, max_days: int) -> bool:
+    """True if no recurring task is due on any day in [from_day, max_days)."""
+    return not any(
+        _is_due(task, day)
+        for day in range(from_day, max_days)
+        for task in recurring
+    )
+
+
+@dataclass
+class MultiDayPlan:
+    """Result of planning across several days.
+
+    `days[i]` is the single-day Plan for day i+1. `unscheduled` holds tasks that
+    never fit within the horizon — either the backlog outlived `max_days`, or a
+    task can never fit the daily constraints at all (e.g. longer than the budget).
+    """
+
+    pet_name: str
+    days: list[Plan] = field(default_factory=list)
+    unscheduled: list[Task] = field(default_factory=list)
+
+    def summary(self) -> str:
+        scheduled = sum(len(p.entries) for p in self.days)
+        line = f"{scheduled} task(s) scheduled across {len(self.days)} day(s)"
+        if self.unscheduled:
+            line += f", {len(self.unscheduled)} left unscheduled"
+        return line
+
+
+@dataclass
+class MultiDayPlanner:
+    """Runs the single-day Scheduler across multiple days.
+
+    Two kinds of task are handled differently:
+      - ONCE tasks form a carry-over backlog: if not placed, they roll into the
+        next day and keep trying until scheduled or the horizon ends.
+      - DAILY/WEEKLY tasks are re-injected fresh on each day they are due. A
+        recurring instance that does not fit simply LAPSES (it is not carried
+        over and does not pile up) — it reappears on its next due day.
+
+    Termination — the loop stops at the first of:
+      1. nothing left to do — the carry-over backlog is empty AND no recurring
+         task is due on any remaining day, or
+      2. a day schedules nothing and no future day could help (identical daily
+         constraints, and no recurrence is due later), or
+      3. `max_days` is reached (the safety cap that bounds the horizon and
+         prevents an ever-growing backlog from carrying over forever).
+
+    Only leftover ONCE tasks end up in `unscheduled`; lapsed recurring instances
+    do not (by design they are expected to recur, not to accumulate).
+    """
+
+    scheduler: Scheduler = field(default_factory=Scheduler)
+
+    def build_multi_day_plan(
+        self,
+        pet_name: str,
+        tasks: list[Task],
+        constraints: DayConstraints,
+        max_days: int = 7,
+    ) -> MultiDayPlan:
+        if max_days < 1:
+            raise ValueError("max_days must be at least 1")
+
+        # Drop completed tasks up front; split recurring from one-off.
+        active = [t for t in tasks if not t.is_completed]
+        recurring = [t for t in active if t.recurrence is not Recurrence.ONCE]
+        carryover = [t for t in active if t.recurrence is Recurrence.ONCE]
+        days: list[Plan] = []
+
+        for day_index in range(max_days):
+            due_today = [t for t in recurring if _is_due(t, day_index)]
+            todays_tasks = due_today + carryover
+
+            if not todays_tasks:
+                # Nothing due and no backlog. Stop only if the future is empty
+                # too; otherwise skip ahead to the next recurring due day.
+                if _no_recurrence_due_in(recurring, day_index + 1, max_days):
+                    break
+                continue
+
+            plan = self.scheduler.build_plan(pet_name, todays_tasks, constraints)
+
+            if not plan.entries:
+                # Nothing fit today. Recurring instances lapse; the backlog is
+                # unchanged. Stop only if no future day could place the backlog.
+                if _no_recurrence_due_in(recurring, day_index + 1, max_days):
+                    break
+                continue
+
+            days.append(plan)
+            # Carry over only the ONCE tasks that were skipped; recurring lapse.
+            carryover = [t for t in plan.skipped if t.recurrence is Recurrence.ONCE]
+
+        # Leftover one-off tasks never placed within the horizon.
+        return MultiDayPlan(pet_name=pet_name, days=days, unscheduled=carryover)

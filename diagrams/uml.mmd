@@ -60,6 +60,7 @@ classDiagram
         +TaskCategory category
         +Recurrence recurrence
         +bool is_completed
+        +str pet_name
         +int priority_weight() int
     }
 
@@ -86,6 +87,7 @@ classDiagram
     class Scheduler {
         +SchedulingStrategy strategy
         +build_plan(pet_name: str, tasks: list~Task~, constraints: DayConstraints) Plan
+        +build_multi_pet_plan(pets: list~Pet~, constraints: DayConstraints, household_name: str) Plan
         -explain(entry: PlanEntry) str
     }
 
@@ -104,6 +106,19 @@ classDiagram
         +str reason
     }
 
+    %% ---------- Multi-day planning (carry-over + max_days cap) ----------
+    class MultiDayPlanner {
+        +Scheduler scheduler
+        +build_multi_day_plan(pet_name: str, tasks: list~Task~, constraints: DayConstraints, max_days: int) MultiDayPlan
+    }
+
+    class MultiDayPlan {
+        +str pet_name
+        +list~Plan~ days
+        +list~Task~ unscheduled
+        +str summary() str
+    }
+
     %% ---------- Relationships ----------
     Owner "1" *-- "many" Pet : owns
     Owner "1" *-- "1" OwnerPreferences : configures
@@ -117,7 +132,13 @@ classDiagram
     SchedulingStrategy <|.. PriorityFirstStrategy : implements
     Scheduler ..> DayConstraints : reads
     Scheduler ..> Task : consumes
+    Scheduler ..> Pet : pools tasks (multi-pet)
     Scheduler ..> Plan : produces
 
     Plan "1" *-- "many" PlanEntry : contains
     PlanEntry --> Task : references
+
+    MultiDayPlanner --> Scheduler : runs each day
+    MultiDayPlanner ..> MultiDayPlan : produces
+    MultiDayPlanner ..> Recurrence : re-injects due DAILY/WEEKLY tasks
+    MultiDayPlan "1" *-- "many" Plan : one per day

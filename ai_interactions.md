@@ -48,6 +48,25 @@ The output just as I predicted, wonderful use of AI.
 
 + Now connect the code with app.py.
 
++ generate a main.py for simple run of pawpal_system.py logic and test the output in main.py by printing the output to the terminal.
+
++ Is there any feature for mark complete to a task? Also is there a logic for postponing a task that couldn't be scheduled in day 1 to enter day 2?
+
+AI suggested to build multi-day planner on top of a single day planner where skipped tasks are placed into other days. A cap is suggested to drop runaway tasks.
+
++ Yes, implement multi-day planner with the one with max_days cap.
+
+The code works fine, and both test cases and main.py are implemented. No problem except the conflict of scheduling same time for different pets.
+
++ Does the code allows if two tasks for the same pet (or different pets) are scheduled at the same time? Can such conflict occurs?
+
+Answer: No for single pet, Yes for different pets. Claude suggested to remove conflict to pool all tasks into a single build_plan.
+
++ Yes, do the merge into one timeline i.e. pool all pets tasks into a single build_plan.
+
++ Have you checked for recurrence tasks?
+
+Claude asked for a good question, what should happen for a recurring task that couldn't be scheduled. The answer was to let is disappear and appears fresh next time it occurs.
 **What did the agent do?**
 
 The answers are shown above. 
@@ -55,6 +74,10 @@ The answers are shown above.
 **What did you have to verify or fix manually?**
 
 I verified few things manually like one or two test cases, and also made a run to app.py.
+
+
+
+
 
 ---
 
