@@ -1,15 +1,123 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
+    %% PawPal+ domain model
+    %% Design principle: keep entities as plain data holders; put scheduling
+    %% behavior in a dedicated Scheduler service so the logic is testable in
+    %% isolation and swappable via a strategy.
 
-    class ClassName {
-        +type attribute
-        +method() returnType
+    %% ---------- Value objects (closed sets) ----------
+    class Priority {
+        <<enumeration>>
+        LOW
+        MEDIUM
+        HIGH
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class TaskCategory {
+        <<enumeration>>
+        WALK
+        FEEDING
+        MEDS
+        ENRICHMENT
+        GROOMING
+        OTHER
     }
 
-    ClassName --> AnotherClass : relationship
+    class Recurrence {
+        <<enumeration>>
+        ONCE
+        DAILY
+        WEEKLY
+    }
+
+    %% ---------- Entities ----------
+    class Owner {
+        +str name
+        +list~Pet~ pets
+        +OwnerPreferences preferences
+        +add_pet(pet: Pet) void
+    }
+
+    class OwnerPreferences {
+        +int available_minutes
+        +str day_start
+        +str day_end
+        +list~str~ quiet_hours
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age_years
+        +list~Task~ tasks
+        +add_task(task: Task) void
+    }
+
+    class Task {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +TaskCategory category
+        +Recurrence recurrence
+        +bool is_completed
+        +int priority_weight() int
+    }
+
+    %% ---------- Constraints passed into scheduling ----------
+    class DayConstraints {
+        +int available_minutes
+        +str day_start
+        +str day_end
+        +list~tuple~ blocked_windows
+        +bool fits(minutes_used: int, task: Task) bool
+        +next_free_start(earliest: int, duration: int) int
+    }
+
+    %% ---------- Scheduling engine (Strategy pattern) ----------
+    class SchedulingStrategy {
+        <<interface>>
+        +order(tasks: list~Task~) list~Task~
+    }
+
+    class PriorityFirstStrategy {
+        +order(tasks: list~Task~) list~Task~
+    }
+
+    class Scheduler {
+        +SchedulingStrategy strategy
+        +build_plan(pet_name: str, tasks: list~Task~, constraints: DayConstraints) Plan
+        -explain(entry: PlanEntry) str
+    }
+
+    %% ---------- Output ----------
+    class Plan {
+        +str pet_name
+        +list~PlanEntry~ entries
+        +list~Task~ skipped
+        +int total_minutes() int
+        +str summary() str
+    }
+
+    class PlanEntry {
+        +Task task
+        +str start_time
+        +str reason
+    }
+
+    %% ---------- Relationships ----------
+    Owner "1" *-- "many" Pet : owns
+    Owner "1" *-- "1" OwnerPreferences : configures
+    Pet "1" *-- "many" Task : has care tasks
+
+    Task --> Priority : uses
+    Task --> TaskCategory : uses
+    Task --> Recurrence : uses
+
+    Scheduler --> SchedulingStrategy : delegates ordering
+    SchedulingStrategy <|.. PriorityFirstStrategy : implements
+    Scheduler ..> DayConstraints : reads
+    Scheduler ..> Task : consumes
+    Scheduler ..> Plan : produces
+
+    Plan "1" *-- "many" PlanEntry : contains
+    PlanEntry --> Task : references
